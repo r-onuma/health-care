@@ -136,16 +136,19 @@
     <li><a href="#s5">健康スコアのロジック</a></li>
     <li><a href="#s6">コメント(アドバイス)機能</a></li>
     <li><a href="#s7">主要フロー</a></li>
-    <li><a href="#s8">非機能・制約事項</a></li>
+    <li><a href="#s8">バックエンドAPI</a></li>
+    <li><a href="#s9">非機能・制約事項</a></li>
   </ol>
 </nav>
 
 <section class="card">
 <h2 id="s1">1. 概要</h2>
 <p>日々の歩数・睡眠時間・体重・食事内容を記録し、内容から算出した「健康スコア」で自分の生活習慣を振り返るためのシングルページアプリケーション。</p>
+<p>データ保存は2モードあり、ビルド時の環境変数 <code>VITE_API_BASE_URL</code> で切り替わる:</p>
 <ul>
-  <li>サーバーを持たず、すべてのデータはブラウザの <code>localStorage</code> にのみ保存される</li>
-  <li>データの持ち出し・復元は手動のJSONエクスポート/インポートで行う</li>
+  <li><strong>API保存モード</strong>(設定あり): Express + PostgreSQL のバックエンド(<code>server/</code>)にREST APIで保存</li>
+  <li><strong>localStorageモード</strong>(未設定): サーバーを持たず、すべてのデータをブラウザの <code>localStorage</code> に保存</li>
+  <li>データの持ち出し・復元は手動のJSONエクスポート/インポートで行う(モード間の移行にも使える)</li>
 </ul>
 </section>
 
@@ -158,7 +161,8 @@
   <tr><td>言語</td><td>JavaScript (JSX)。TypeScriptは未使用</td></tr>
   <tr><td>状態管理</td><td>Reactの <code>useState</code> / <code>useMemo</code> / <code>useRef</code> のみ(外部ライブラリなし)</td></tr>
   <tr><td>ルーティング</td><td>ライブラリ不使用。<code>view</code> というstateでタブ切り替え</td></tr>
-  <tr><td>データ永続化</td><td>ブラウザの <code>localStorage</code>(バックエンド・DBなし)</td></tr>
+  <tr><td>データ永続化</td><td>API保存モード: Express + PostgreSQL / localStorageモード: ブラウザの <code>localStorage</code></td></tr>
+  <tr><td>バックエンド</td><td>Node.js + Express + <code>pg</code>(<code>server/</code>)。REST API、起動時スキーマ自動作成、CORS、任意のBearerトークン認証</td></tr>
   <tr><td>グラフ描画</td><td>自前のSVGコンポーネント(チャートライブラリ不使用)</td></tr>
 </table>
 
@@ -177,17 +181,24 @@
   <tr><th>タブ</th><th>役割</th></tr>
   <tr><td>記録を追加(初期表示)</td><td>その日の記録を入力・保存する。保存直後はスコア結果画面を表示</td></tr>
   <tr><td>記録一覧</td><td>保存済み記録を新しい日付順に一覧表示。編集・削除が可能</td></tr>
-  <tr><td>スコアの推移</td><td>直近10日分の健康スコアを折れ線グラフで表示</td></tr>
+  <tr><td>スコアの推移</td><td>指標(スコア/体重/歩数/睡眠)と期間(週/月/全期間)を切り替えられる折れ線グラフ</td></tr>
   <tr><td>プロフィール設定</td><td>性別・年齢・身長・体重(基本体重)を設定</td></tr>
   <tr><td>バックアップ</td><td>全データのエクスポート(JSONダウンロード)・インポート</td></tr>
 </table>
+<p>API保存モードでは、初回マウント時にサーバーから全データを取得する。取得中は「読み込み中...」、失敗時は再試行ボタン付きのエラーバナーを表示する。</p>
 </section>
 
 <section class="card">
 <h2 id="s4">4. データモデル</h2>
+<p>フロントエンドが扱うデータ形式は両モード共通。保存先だけが異なる。</p>
+<table>
+  <tr><th>モード</th><th>記録の保存先</th><th>プロフィールの保存先</th></tr>
+  <tr><td>API保存</td><td>PostgreSQL <code>records</code> テーブル</td><td>PostgreSQL <code>profile</code> テーブル(常に1行、<code>id = 1</code>)</td></tr>
+  <tr><td>localStorage</td><td>キー <code>health-app-records</code></td><td>キー <code>health-app-profile</code></td></tr>
+</table>
 
-<h3>4.1 記録 (Record) — localStorageキー: <code>health-app-records</code></h3>
-<p>日付ごとに1件。配列としてJSON保存される。</p>
+<h3>4.1 記録 (Record)</h3>
+<p>日付ごとに1件。localStorageモードでは配列としてJSON保存される。</p>
 <table>
   <tr><th>フィールド</th><th>型</th><th>必須</th><th>説明</th></tr>
   <tr><td><code>id</code></td><td>string (UUID)</td><td>○</td><td><code>crypto.randomUUID()</code> で採番</td></tr>
@@ -197,8 +208,9 @@
   <tr><td><code>weight</code></td><td>string (数値)</td><td>任意</td><td>その日の体重(kg)。未入力時はプロフィールの体重を評価に使用</td></tr>
   <tr><td><code>mealMemo</code></td><td>string</td><td>任意</td><td>食事の自由記述メモ</td></tr>
 </table>
+<p>DBの <code>records</code> テーブルでは各フィールドをsnake_case(<code>sleep_hours</code>, <code>meal_memo</code>)で保持し、<code>date</code> に UNIQUE 制約を張ることで「1日1件」をDBレベルでも保証する。テーブルはサーバー起動時に <code>CREATE TABLE IF NOT EXISTS</code> で自動作成される。</p>
 
-<h3>4.2 プロフィール (Profile) — localStorageキー: <code>health-app-profile</code></h3>
+<h3>4.2 プロフィール (Profile)</h3>
 <table>
   <tr><th>フィールド</th><th>型</th><th>説明</th></tr>
   <tr><td><code>gender</code></td><td><code>'male' | 'female' | 'other' | ''</code></td><td>適正体重(BMI基準値)の算出に使用</td></tr>
@@ -291,30 +303,61 @@ score = max(0, 100 - (diffRatio / 0.2) &times; 100)</code></pre>
 
 <h3>7.3 プロフィール設定</h3>
 <ul>
-  <li>入力するたびに自動でstate更新・<code>localStorage</code>へ保存(<code>useEffect</code>)</li>
+  <li>入力するたびに自動でstate更新・保存(localStorageモードは即時、API保存モードはデバウンス。7.6参照)</li>
   <li>加えて明示的な「保存する」ボタンがあり、押すと「✓ 保存しました」を2.5秒間表示</li>
 </ul>
 
-<h3>7.4 スコアの推移グラフ</h3>
+<h3>7.4 記録の推移グラフ</h3>
 <ul>
-  <li>スコアが算出できた記録のうち、日付の新しい方から最大10件を抽出</li>
-  <li>縦軸: スコア(0/50/100目盛り)、横軸: 日付(<code>MM/DD</code>表示)の折れ線グラフ(自前SVG)</li>
-  <li>記録が2件未満の場合は「グラフ表示には2日分以上の記録が必要です。」と表示</li>
+  <li><strong>指標切り替え</strong>: スコア / 体重 / 歩数 / 睡眠 の4指標をボタンで切り替え</li>
+  <li><strong>期間切り替え</strong>: 週(直近7日) / 月(直近30日) / 全期間。日付ベースでフィルタする(初期表示は「スコア×月」)</li>
+  <li>縦軸は指標ごとに最適化: スコアは0〜100固定、歩数・睡眠は0起点、体重はデータ範囲(+適正体重)にズーム</li>
+  <li>体重表示時は、プロフィールから適正体重が算出できる場合に破線の基準線を表示</li>
+  <li>横軸の日付ラベルは最新日を基準に最大8個へ間引き、点のホバーで「日付: 値+単位」をツールチップ表示</li>
+  <li>選択中の指標で値のある記録が2件未満の場合はグラフの代わりに案内文を表示</li>
 </ul>
 
 <h3>7.5 バックアップ(エクスポート/インポート)</h3>
 <ul>
   <li><strong>エクスポート</strong>: <code>profile</code> + <code>records</code> + エクスポート日時をJSON化し、<code>Blob</code> / <code>URL.createObjectURL</code> を使ってファイルダウンロード(<code>health-app-backup-YYYY-MM-DD.json</code>)</li>
-  <li><strong>インポート</strong>: <code>&lt;input type="file"&gt;</code> で選択したJSONを <code>FileReader</code> で読み込み、パース後に <code>records</code> / <code>profile</code> をまるごと置き換え(既存データは上書き)</li>
-  <li>通信は発生せず、すべてクライアントサイドのブラウザAPIで完結</li>
+  <li><strong>インポート</strong>: <code>&lt;input type="file"&gt;</code> で選択したJSONを <code>FileReader</code> で読み込み、パース後に <code>records</code> / <code>profile</code> をまるごと置き換え(既存データは上書き)。API保存モードでは <code>PUT /api/import</code> でサーバー側も全置換する</li>
+  <li>localStorage版でエクスポートしたJSONをAPI版でインポートすることで、モード間のデータ移行ができる</li>
+</ul>
+
+<h3>7.6 API保存モードのデータ同期</h3>
+<ul>
+  <li>初回マウント時に <code>GET /api/records</code> と <code>GET /api/profile</code> を並列取得</li>
+  <li>保存・削除は<strong>楽観的更新</strong>: 先に画面のstateを更新し、裏でAPIを呼ぶ。失敗時はアラートを表示してサーバーから再取得し、画面を実状態に合わせ直す</li>
+  <li>プロフィールは入力のたびに保存せず、変更が800ms落ち着いてから <code>PUT /api/profile</code>(デバウンス)。「保存する」ボタンは即時保存</li>
 </ul>
 </section>
 
 <section class="card">
-<h2 id="s8">8. 非機能・制約事項</h2>
+<h2 id="s8">8. バックエンドAPI (<code>server/</code>)</h2>
+<p>Express製のREST APIサーバー。環境変数 <code>DATABASE_URL</code> でPostgreSQLに接続し、起動時にスキーマを自動作成する。</p>
+<table>
+  <tr><th>メソッド</th><th>パス</th><th>役割</th></tr>
+  <tr><td>GET</td><td><code>/api/health</code></td><td>ヘルスチェック(<code>{"ok":true}</code>)</td></tr>
+  <tr><td>GET</td><td><code>/api/records</code></td><td>記録の一覧を日付昇順で返す</td></tr>
+  <tr><td>PUT</td><td><code>/api/records</code></td><td>記録の保存。<code>id</code> でupsertし、日付が他の記録と重複する場合は409</td></tr>
+  <tr><td>DELETE</td><td><code>/api/records/:id</code></td><td>記録の削除。存在しない場合は404</td></tr>
+  <tr><td>GET</td><td><code>/api/profile</code></td><td>プロフィール取得(未設定時は空文字のオブジェクト)</td></tr>
+  <tr><td>PUT</td><td><code>/api/profile</code></td><td>プロフィール保存(単一行にupsert)</td></tr>
+  <tr><td>PUT</td><td><code>/api/import</code></td><td>記録・プロフィールの一括置換(トランザクション内で実行)</td></tr>
+</table>
 <ul>
-  <li><strong>データの保存範囲</strong>: ブラウザ単位(端末・ブラウザが変わるとデータは引き継がれない)。他端末への移行はエクスポート/インポートを手動で行う必要がある</li>
-  <li><strong>公開状態</strong>: GitHub Actions によるGitHub Pagesへの自動デプロイ設定(<code>.github/workflows/deploy.yml</code>)を用意済み</li>
+  <li><strong>CORS</strong>: 環境変数 <code>ALLOWED_ORIGINS</code>(カンマ区切り)で許可オリジンを指定</li>
+  <li><strong>認証(任意)</strong>: 環境変数 <code>API_TOKEN</code> を設定すると、書き込み系(GET以外)に <code>Authorization: Bearer &lt;token&gt;</code> を要求する。未設定時は認証なし</li>
+  <li><strong>エラー</strong>: 業務エラーは4xx + <code>{"error": "..."}</code>、想定外は500(詳細はサーバーログのみ)</li>
+</ul>
+</section>
+
+<section class="card">
+<h2 id="s9">9. 非機能・制約事項</h2>
+<ul>
+  <li><strong>データの保存範囲</strong>: localStorageモードではブラウザ単位(端末・ブラウザが変わるとデータは引き継がれない)。API保存モードではサーバーのDBに保存され、どの端末からも同じデータになる</li>
+  <li><strong>シングルユーザー前提</strong>: ユーザーアカウントの概念はなく、DBは全利用者で共有される(<code>API_TOKEN</code> 未設定時は誰でも書き込める)。個人利用・デモ用途を想定</li>
+  <li><strong>公開構成</strong>: フロント=GitHub Pages(<code>.github/workflows/deploy.yml</code>。リポジトリ変数 <code>VITE_API_BASE_URL</code> でAPI接続先を注入)、API=Render(<code>render.yaml</code>)、DB=Neon。Renderの無料プランは15分無アクセスでスリープし、復帰に数十秒かかる</li>
   <li><strong>食事評価の限界</strong>: キーワードマッチによるヒューリスティックであり、実際の栄養価・分量を評価するものではない</li>
   <li><strong>年齢</strong>: プロフィールに保持するが、現バージョンのスコア計算には使用していない</li>
 </ul>
