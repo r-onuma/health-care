@@ -286,14 +286,58 @@ function getPreviousDateStr(dateStr) {
   return d.toISOString().slice(0, 10)
 }
 
-const CHART_MAX_DAYS = 10
+const CHART_METRICS = [
+  { key: 'score', label: 'スコア', unit: '点' },
+  { key: 'weight', label: '体重', unit: 'kg' },
+  { key: 'steps', label: '歩数', unit: '歩' },
+  { key: 'sleep', label: '睡眠', unit: 'h' },
+]
 
-function getDailyScores(records, profile, limit = CHART_MAX_DAYS) {
-  const points = records
-    .map((r) => ({ date: r.date, score: calcHealthScore(r, profile).total }))
-    .filter((p) => p.score != null)
+const CHART_PERIODS = [
+  { key: 'week', label: '週', days: 7 },
+  { key: 'month', label: '月', days: 30 },
+  { key: 'all', label: '全期間', days: null },
+]
+
+function getMetricValue(record, profile, metric) {
+  if (metric === 'score') return calcHealthScore(record, profile).total
+  if (metric === 'weight') return hasValue(record.weight) ? Number(record.weight) : null
+  if (metric === 'steps') return hasValue(record.steps) ? Number(record.steps) : null
+  if (metric === 'sleep') return hasValue(record.sleepHours) ? Number(record.sleepHours) : null
+  return null
+}
+
+// 指定期間(直近N日 / 全期間)の指標を日付昇順の点列にする
+function getMetricPoints(records, profile, metric, periodDays) {
+  let points = records
+    .map((r) => ({ date: r.date, value: getMetricValue(r, profile, metric) }))
+    .filter((p) => p.value != null)
     .sort((a, b) => a.date.localeCompare(b.date))
-  return points.slice(-limit)
+  if (periodDays != null) {
+    const cutoff = new Date()
+    cutoff.setDate(cutoff.getDate() - (periodDays - 1))
+    const cutoffStr = cutoff.toISOString().slice(0, 10)
+    points = points.filter((p) => p.date >= cutoffStr)
+  }
+  return points
+}
+
+// 縦軸の表示範囲。スコアは0〜100固定、歩数・睡眠は0起点、
+// 体重はデータ範囲(基準線があればそれも含む)にズーム
+function getChartDomain(metric, points, refValue = null) {
+  if (metric === 'score') return { min: 0, max: 100 }
+  const values = points.map((p) => p.value)
+  if (metric === 'weight' && refValue != null) values.push(refValue)
+  const max = Math.max(...values)
+  const min = Math.min(...values)
+  if (metric === 'steps') {
+    return { min: 0, max: Math.max(10000, Math.ceil(max / 2000) * 2000) }
+  }
+  if (metric === 'sleep') {
+    return { min: 0, max: Math.max(10, Math.ceil(max)) }
+  }
+  const pad = Math.max(1, (max - min) * 0.2)
+  return { min: Math.floor(min - pad), max: Math.ceil(max + pad) }
 }
 
 const TABS = [
@@ -310,6 +354,8 @@ function App() {
   const [form, setForm] = useState(emptyForm)
   const [editingId, setEditingId] = useState(null)
   const [view, setView] = useState('add')
+  const [chartMetric, setChartMetric] = useState('score')
+  const [chartPeriod, setChartPeriod] = useState('month')
   const [lastResult, setLastResult] = useState(null)
   const [profileSaved, setProfileSaved] = useState(false)
   const fieldRefs = useRef({})
@@ -331,10 +377,10 @@ function App() {
 
   const idealWeight = useMemo(() => calcIdealWeight(profile), [profile])
 
-  const dailyScorePoints = useMemo(
-    () => getDailyScores(records, profile),
-    [records, profile],
-  )
+  const chartPoints = useMemo(() => {
+    const period = CHART_PERIODS.find((p) => p.key === chartPeriod)
+    return getMetricPoints(records, profile, chartMetric, period?.days ?? null)
+  }, [records, profile, chartMetric, chartPeriod])
 
   const handleExport = () => {
     const data = { profile, records, exportedAt: new Date().toISOString() }
@@ -579,12 +625,51 @@ function App() {
 
       {view === 'chart' && (
         <section className="card">
-          <h2>健康スコアの推移</h2>
-          <p className="chart-hint">直近{CHART_MAX_DAYS}日分の日次スコアを表示します。</p>
-          {dailyScorePoints.length > 1 ? (
-            <ScoreChart points={dailyScorePoints} />
+          <h2>記録の推移</h2>
+          <div className="chart-controls">
+            <div className="chart-control-group" role="group" aria-label="表示する指標">
+              {CHART_METRICS.map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  className={chartMetric === m.key ? 'chart-pill active' : 'chart-pill'}
+                  onClick={() => setChartMetric(m.key)}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <div className="chart-control-group" role="group" aria-label="表示期間">
+              {CHART_PERIODS.map((p) => (
+                <button
+                  key={p.key}
+                  type="button"
+                  className={chartPeriod === p.key ? 'chart-pill active' : 'chart-pill'}
+                  onClick={() => setChartPeriod(p.key)}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="chart-hint">
+            {CHART_PERIODS.find((p) => p.key === chartPeriod)?.days != null
+              ? `直近${CHART_PERIODS.find((p) => p.key === chartPeriod).days}日分`
+              : '全期間'}
+            の{CHART_METRICS.find((m) => m.key === chartMetric)?.label}を表示します。
+          </p>
+          {chartPoints.length > 1 ? (
+            <MetricChart
+              points={chartPoints}
+              metric={chartMetric}
+              unit={CHART_METRICS.find((m) => m.key === chartMetric)?.unit}
+              refValue={chartMetric === 'weight' ? idealWeight : null}
+            />
           ) : (
-            <p className="empty">グラフ表示には2日分以上の記録が必要です。</p>
+            <p className="empty">
+              この期間に{CHART_METRICS.find((m) => m.key === chartMetric)?.label}
+              の記録が2日分以上あるとグラフを表示できます。
+            </p>
           )}
         </section>
       )}
@@ -781,34 +866,50 @@ function formatChartDate(dateStr) {
   return `${month}/${day}`
 }
 
-function ScoreChart({ points }) {
+function formatChartValue(value) {
+  return Number(value).toLocaleString('ja-JP')
+}
+
+const CHART_MAX_X_LABELS = 8
+
+function MetricChart({ points, metric, unit, refValue }) {
   const width = 640
   const height = 220
-  const padLeft = 34
+  const padLeft = 48
   const padRight = 20
   const padTop = 14
   const padBottom = 30
   const plotWidth = width - padLeft - padRight
   const plotHeight = height - padTop - padBottom
-  const yTicks = [0, 50, 100]
+
+  const { min, max } = getChartDomain(metric, points, refValue)
+  const range = max - min || 1
+  const yTicks = [min, (min + max) / 2, max]
+
+  const toY = (v) => padTop + plotHeight - ((v - min) / range) * plotHeight
 
   const coords = points.map((p, i) => {
     const x =
       points.length === 1
         ? padLeft
         : padLeft + (i / (points.length - 1)) * plotWidth
-    const y = padTop + plotHeight - (p.score / 100) * plotHeight
-    return { x, y, ...p }
+    return { x, y: toY(p.value), ...p }
   })
 
   const pathD = coords
     .map((c, i) => `${i === 0 ? 'M' : 'L'}${c.x.toFixed(1)},${c.y.toFixed(1)}`)
     .join(' ')
 
+  // 点が多い期間でも日付ラベルが重ならないよう、最新日を基準に間引く
+  const labelEvery = Math.max(1, Math.ceil(points.length / CHART_MAX_X_LABELS))
+  const showLabel = (i) => (points.length - 1 - i) % labelEvery === 0
+
+  const showRefLine = refValue != null && refValue >= min && refValue <= max
+
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="score-chart" role="img">
       {yTicks.map((t) => {
-        const y = padTop + plotHeight - (t / 100) * plotHeight
+        const y = toY(t)
         return (
           <g key={t}>
             <line
@@ -820,28 +921,56 @@ function ScoreChart({ points }) {
               strokeWidth="1"
             />
             <text x={padLeft - 8} y={y + 4} fontSize="11" textAnchor="end" fill="var(--text)">
-              {t}
+              {formatChartValue(t)}
             </text>
           </g>
         )
       })}
+      {showRefLine && (
+        <g>
+          <line
+            x1={padLeft}
+            y1={toY(refValue)}
+            x2={width - padRight}
+            y2={toY(refValue)}
+            stroke="var(--text)"
+            strokeWidth="1"
+            strokeDasharray="4 4"
+            opacity="0.5"
+          />
+          <text
+            x={width - padRight}
+            y={toY(refValue) - 5}
+            fontSize="10"
+            textAnchor="end"
+            fill="var(--text)"
+            opacity="0.7"
+          >
+            適正体重 {refValue.toFixed(1)}kg
+          </text>
+        </g>
+      )}
       <path d={pathD} fill="none" stroke="var(--accent)" strokeWidth="2" />
-      {coords.map((c) => (
+      {coords.map((c, i) => (
         <g key={c.date}>
-          <circle cx={c.x} cy={c.y} r="3" fill="var(--accent)">
+          <circle cx={c.x} cy={c.y} r="3" fill="var(--accent)" />
+          <circle cx={c.x} cy={c.y} r="10" fill="transparent">
             <title>
-              {c.date}: {c.score}点
+              {c.date}: {formatChartValue(c.value)}
+              {unit}
             </title>
           </circle>
-          <text
-            x={c.x}
-            y={height - padBottom + 16}
-            fontSize="10"
-            textAnchor="middle"
-            fill="var(--text)"
-          >
-            {formatChartDate(c.date)}
-          </text>
+          {showLabel(i) && (
+            <text
+              x={c.x}
+              y={height - padBottom + 16}
+              fontSize="10"
+              textAnchor="middle"
+              fill="var(--text)"
+            >
+              {formatChartDate(c.date)}
+            </text>
+          )}
         </g>
       ))}
     </svg>

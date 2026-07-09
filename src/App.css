@@ -304,6 +304,33 @@ button.danger {
   gap: 10px;
 }
 
+.chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-bottom: 12px;
+}
+
+.chart-control-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chart-pill {
+  padding: 4px 14px;
+  font-size: 13px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+}
+
+.chart-pill.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 .chart-hint {
   margin: 0 0 12px;
   font-size: 14px;
