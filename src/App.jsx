@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import * as api from './api.js'
 import './App.css'
 
 const STORAGE_KEY = 'health-app-records'
@@ -349,8 +350,11 @@ const TABS = [
 ]
 
 function App() {
-  const [records, setRecords] = useState(loadRecords)
-  const [profile, setProfile] = useState(loadProfile)
+  // API保存モードではサーバーから取得するまで空で始める
+  const [records, setRecords] = useState(() => (api.apiEnabled ? [] : loadRecords()))
+  const [profile, setProfile] = useState(() => (api.apiEnabled ? emptyProfile : loadProfile()))
+  const [loading, setLoading] = useState(api.apiEnabled)
+  const [loadError, setLoadError] = useState(null)
   const [form, setForm] = useState(emptyForm)
   const [editingId, setEditingId] = useState(null)
   const [view, setView] = useState('add')
@@ -362,12 +366,42 @@ function App() {
   const importInputRef = useRef(null)
   const profileSavedTimeoutRef = useRef(null)
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records))
-  }, [records])
+  // 初回マウント時にサーバーから全データを取得する(API保存モードのみ)
+  const loadFromServer = async () => {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const [serverRecords, serverProfile] = await Promise.all([api.fetchRecords(), api.fetchProfile()])
+      setRecords(serverRecords)
+      setProfile({ ...emptyProfile, ...serverProfile })
+    } catch (err) {
+      setLoadError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile))
+    if (api.apiEnabled) loadFromServer()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (!api.apiEnabled) localStorage.setItem(STORAGE_KEY, JSON.stringify(records))
+  }, [records])
+
+  // localStorageモードは即時保存、APIモードは入力が落ち着いてから保存(デバウンス)
+  useEffect(() => {
+    if (!api.apiEnabled) {
+      localStorage.setItem(PROFILE_KEY, JSON.stringify(profile))
+      return
+    }
+    if (loading) return
+    const timer = setTimeout(() => {
+      api.saveProfile(profile).catch((err) => console.error('プロフィールの保存に失敗:', err))
+    }, 800)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile])
 
   const sortedRecords = useMemo(
@@ -397,6 +431,12 @@ function App() {
     importInputRef.current?.click()
   }
 
+  // API呼び出しに失敗したら通知して、サーバーの状態と画面を合わせ直す
+  const handleApiError = (err) => {
+    window.alert(`保存に失敗しました: ${err.message}`)
+    loadFromServer()
+  }
+
   const handleImportFile = (e) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -406,6 +446,9 @@ function App() {
         const data = JSON.parse(reader.result)
         if (Array.isArray(data.records)) setRecords(data.records)
         if (data.profile) setProfile({ ...emptyProfile, ...data.profile })
+        if (api.apiEnabled && Array.isArray(data.records)) {
+          api.importAll({ records: data.records, profile: data.profile }).catch(handleApiError)
+        }
       } catch {
         window.alert('ファイルの読み込みに失敗しました。正しいバックアップファイルか確認してください。')
       }
@@ -426,7 +469,11 @@ function App() {
   }
 
   const handleProfileSave = () => {
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile))
+    if (api.apiEnabled) {
+      api.saveProfile(profile).catch(handleApiError)
+    } else {
+      localStorage.setItem(PROFILE_KEY, JSON.stringify(profile))
+    }
     setProfileSaved(true)
     clearTimeout(profileSavedTimeoutRef.current)
     profileSavedTimeoutRef.current = setTimeout(() => setProfileSaved(false), 2500)
@@ -453,9 +500,9 @@ function App() {
     if (!form.date) return
 
     if (editingId) {
-      setRecords((rs) =>
-        rs.map((r) => (r.id === editingId ? { ...form, id: editingId } : r)),
-      )
+      const updated = { ...form, id: editingId }
+      setRecords((rs) => rs.map((r) => (r.id === editingId ? updated : r)))
+      if (api.apiEnabled) api.saveRecord(updated).catch(handleApiError)
       setEditingId(null)
       setForm(emptyForm)
       setView('list')
@@ -468,6 +515,7 @@ function App() {
     setRecords((rs) =>
       existing ? rs.map((r) => (r.id === existing.id ? newRecord : r)) : [...rs, newRecord],
     )
+    if (api.apiEnabled) api.saveRecord(newRecord).catch(handleApiError)
 
     const previousDateStr = getPreviousDateStr(form.date)
     const previousRecord = records.find((r) => r.date === previousDateStr) ?? null
@@ -494,6 +542,7 @@ function App() {
 
   const handleDelete = (id) => {
     setRecords((rs) => rs.filter((r) => r.id !== id))
+    if (api.apiEnabled) api.deleteRecord(id).catch(handleApiError)
     if (editingId === id) {
       setEditingId(null)
       setForm(emptyForm)
@@ -528,6 +577,16 @@ function App() {
           </button>
         ))}
       </nav>
+
+      {loadError && (
+        <div className="api-error">
+          サーバーに接続できませんでした({loadError})
+          <button type="button" onClick={loadFromServer}>
+            再試行
+          </button>
+        </div>
+      )}
+      {loading && <p className="api-loading">読み込み中...</p>}
 
       {view === 'profile' && (
         <section className="card">

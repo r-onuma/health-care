@@ -4,8 +4,11 @@
 
 日々の歩数・睡眠時間・体重・食事内容を記録し、内容から算出した「健康スコア」で自分の生活習慣を振り返るためのシングルページアプリケーション。
 
-- サーバーを持たず、すべてのデータはブラウザの `localStorage` にのみ保存される
-- データの持ち出し・復元は手動のJSONエクスポート/インポートで行う
+データ保存は2モードあり、ビルド時の環境変数 `VITE_API_BASE_URL` で切り替わる:
+
+- **API保存モード**(設定あり): Express + PostgreSQL のバックエンド(`server/`)にREST APIで保存
+- **localStorageモード**(未設定): サーバーを持たず、すべてのデータをブラウザの `localStorage` に保存
+- データの持ち出し・復元は手動のJSONエクスポート/インポートで行う(モード間の移行にも使える)
 
 ## 2. 技術構成
 
@@ -16,7 +19,8 @@
 | 言語 | JavaScript (JSX)。TypeScriptは未使用 |
 | 状態管理 | Reactの `useState` / `useMemo` / `useRef` のみ(外部ライブラリなし) |
 | ルーティング | ライブラリ不使用。`view` というstateでタブ切り替え |
-| データ永続化 | ブラウザの `localStorage`(バックエンド・DBなし) |
+| データ永続化 | API保存モード: Express + PostgreSQL / localStorageモード: ブラウザの `localStorage` |
+| バックエンド | Node.js + Express + `pg`(`server/`)。REST API、起動時スキーマ自動作成、CORS、任意のBearerトークン認証 |
 | グラフ描画 | 自前のSVGコンポーネント(チャートライブラリ不使用) |
 
 主要ファイル:

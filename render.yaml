@@ -1,0 +1,16 @@
+# Render Blueprint: リポジトリをRenderに接続すると、この定義でAPIサーバーが作られる
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: health-care-api
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false # NeonのPostgres接続文字列をRenderのダッシュボードで設定する
+      - key: ALLOWED_ORIGINS
+        value: https://r-onuma.github.io
